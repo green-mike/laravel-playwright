@@ -223,11 +223,32 @@ class Controller
 
     }
 
-    public function tearDown(DynamicConfig $dynamicConfig) : JsonResponse
+    public function tearDown(Request $request, DynamicConfig $dynamicConfig) : JsonResponse
     {
         $dynamicConfig->delete();
+        
+        // Clean up worker-specific resources if this is a worker request
+        $workerId = $request->header('X-Playwright-Worker');
+        if ($workerId !== null) {
+            $this->cleanupWorkerResources((string) $workerId);
+        }
 
         return Response::json();
+    }
+    
+    private function cleanupWorkerResources(string $workerId): void
+    {
+        // Clear Redis data with worker prefix (if Redis is available)
+        try {
+            $redis = \Illuminate\Support\Facades\Redis::connection();
+            // Middleware already sets Redis prefix to "worker_{$workerId}:", so use "*"
+            $keys = $redis->keys("*");
+            if (!empty($keys)) {
+                $redis->del($keys);
+            }
+        } catch (\Exception $e) {
+            // Redis might not be available, ignore
+        }
     }
 
 

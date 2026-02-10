@@ -11,18 +11,13 @@ class Migrations
 
     public static function run(): void
     {
+        Schema::dropIfExists('users');
 
-        DB::statement('drop table if exists users');
-
-        DB::statement('
-            create table users (
-                id bigserial,
-                name varchar(255),
-                created_at timestamp,
-                updated_at timestamp
-            )
-        ');
-
+        Schema::create('users', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->timestamps();
+        });
     }
 
 }

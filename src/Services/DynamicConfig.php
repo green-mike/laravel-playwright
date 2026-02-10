@@ -26,6 +26,16 @@ class DynamicConfig
 
     public static function getFilePath(): string
     {
+        try {
+            $workerId = request()->header('X-Playwright-Worker');
+            
+            if ($workerId !== null) {
+                return storage_path("laravel-playwright-config-worker-{$workerId}.json");
+            }
+        } catch (\Exception $e) {
+            // Request not available (e.g., in CLI or testing context)
+        }
+        
         return storage_path('laravel-playwright-config.json');
     }
 

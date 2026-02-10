@@ -31,4 +31,15 @@ class TestCase extends \Orchestra\Testbench\TestCase
         ];
     }
 
+    protected function defineEnvironment($app)
+    {
+        // Setup SQLite database for testing
+        $app['config']->set('database.default', 'testing');
+        $app['config']->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
+    }
+
 }
