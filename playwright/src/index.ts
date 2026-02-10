@@ -1,130 +1,160 @@
-import {APIRequestContext, test as playwrightTest} from '@playwright/test';
+import { APIRequestContext, test as playwrightTest, Route, Request, TestInfo } from '@playwright/test';
 
 export interface LaravelOptions {
-    /**
-     * The base URL to the endpoints
-     * @default <playwright-base-url>/playwright
-     */
-    laravelBaseUrl: string | undefined;
+  /**
+   * The base URL to the endpoints
+   * @default <playwright-base-url>/playwright
+   */
+  laravelBaseUrl: string | undefined;
 }
 
 interface LaravelFixtures {
-    laravel: Laravel;
+  laravel: Laravel;
 }
 
 export const test = playwrightTest.extend<LaravelFixtures & LaravelOptions>({
+  laravelBaseUrl: [undefined, { option: true }],
 
-    laravelBaseUrl: [undefined, {option: true}],
+  context: async ({ context }, use, testInfo: TestInfo) => {
+    // Intercept all HTTP requests to add the X-Playwright-Worker header
+    await context.route('**/*', async (route: Route, request: Request) => {
+      const headers = {
+        ...request.headers(),
+        'X-Playwright-Worker': testInfo.parallelIndex.toString(),
+      };
+      await route.continue({ headers });
+    });
 
-    laravel: async ({ laravelBaseUrl, baseURL, request }, use) => {
-        const baseUrl = laravelBaseUrl || baseURL + '/playwright'
-        const laravel = new Laravel(baseUrl, request);
-        await use(laravel);
-        await laravel.tearDown();
-    }
+    await use(context);
+  },
 
-})
+  laravel: async ({ laravelBaseUrl, baseURL, request }: any, use: any, testInfo: TestInfo) => {
+    const baseUrl = laravelBaseUrl || baseURL + '/playwright';
+    const laravel = new Laravel(baseUrl, request, testInfo.parallelIndex);
+    await use(laravel);
+    await laravel.tearDown();
+  },
+});
 
 export class Laravel {
+  constructor(
+    private baseUrl: string, 
+    private request: APIRequestContext,
+    private workerId?: number
+  ) {}
 
-    constructor(
-        private baseUrl: string,
-        private request: APIRequestContext
-    ) {}
+  async call<T extends any>(endpoint: string, data: object = {}): Promise<T> {
+    const url = this.baseUrl.replace(/\/$/, '') + endpoint;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
 
-    async call<T extends any>(endpoint: string, data: object = {}) : Promise<T> {
-        const url = this.baseUrl.replace(/\/$/, '') + endpoint;
-        const response = await this.request.post(url, {data});
-        if (response.status() !== 200) {
-            throw new Error(`
+    // Add worker header if workerId is available
+    if (this.workerId !== undefined) {
+      headers['X-Playwright-Worker'] = this.workerId.toString();
+    }
+
+    const response = await this.request.post(url, { data, headers });
+    if (response.status() !== 200) {
+      throw new Error(`
                 Failed to call Laravel ${endpoint}. 
                 Status: ${response.status()}
                 Response: ${await response.text()}
             `);
-        }
-
-        return await response.json();
     }
 
-    async artisan(command: string, parameters: string[] = []) {
-        return await this.call<{code: number, output: string}>('/artisan', {command, parameters});
+    return await response.json();
+  }
+
+  async artisan(command: string, parameters: string[] = []) {
+    return await this.call<{ code: number; output: string }>('/artisan', {
+      command,
+      parameters,
+    });
+  }
+
+  async truncate(connections: (string | null)[] = []) {
+    return await this.call('/truncate', { connections });
+  }
+
+  async factory<CountT extends number | undefined = undefined>(
+    model: string,
+    attrs: any = {},
+    count: CountT = undefined as CountT,
+  ) {
+    return await this.call<
+      CountT extends undefined ? Record<string, any> : Record<string, any>[]
+    >('/factory', { model, count, attrs });
+  }
+
+  async query(
+    query: string,
+    bindings: Array<any> = [],
+    options: {
+      connection?: string | null;
+      unprepared?: boolean;
+    } = {},
+  ) {
+    const { connection = null, unprepared = false } = options;
+
+    if (unprepared && bindings.length > 0) {
+      throw new Error('Cannot use unprepared with bindings');
     }
 
-    async truncate(connections: (string|null)[] = []) {
-        return await this.call('/truncate', {connections});
-    }
+    return await this.call<{
+      success: boolean;
+    }>('/query', {
+      query,
+      bindings,
+      connection,
+      unprepared,
+    });
+  }
 
-    async factory<CountT extends number | undefined = undefined>(
-        model: string,
-        attrs: any = {},
-        count: CountT = undefined as CountT
-    ) {
-        return await this.call<CountT extends undefined ? Record<string, any> : Record<string, any>[]>('/factory', {model, count, attrs});
-    }
+  async select(
+    query: string,
+    bindings: Record<string, any> = {},
+    options: {
+      connection?: string | null;
+      unprepared?: boolean;
+    } = {},
+  ) {
+    const { connection = null } = options;
+    return await this.call<Record<string, any>[]>('/select', {
+      query,
+      bindings,
+      connection,
+    });
+  }
 
-    async query(
-        query: string,
-        bindings: Array<any> = [],
-        options: {
-            connection?: string | null,
-            unprepared?: boolean
-        } = {}
-    ) {
+  async callFunction<T extends any>(
+    func: string,
+    args: any[] | Record<string, any> = [],
+  ) {
+    return await this.call<T>('/function', { function: func, args });
+  }
 
-        const { connection = null, unprepared = false } = options;
+  /**
+   * Sets a laravel config value until tearDown is called (or the test ends)
+   */
+  async config(key: string, value: any) {
+    return await this.call('/dynamicConfig', { key, value });
+  }
 
-        if (unprepared && bindings.length > 0) {
-            throw new Error('Cannot use unprepared with bindings');
-        }
+  /**
+   * Travel to a specific time
+   * ex: travel('2021-01-01 00:00:00')
+   */
+  async travel(to: string) {
+    return await this.call('/travel', { to });
+  }
 
-        return await this.call<{
-            success: boolean
-        }>('/query', {
-            query,
-            bindings,
-            connection,
-            unprepared
-        });
+  async registerBootFunction(func: string) {
+    return await this.call('/registerBootFunction', { function: func });
+  }
 
-    }
-
-    async select(
-        query: string,
-        bindings: Record<string, any> = {},
-        options: {
-            connection?: string | null,
-            unprepared?: boolean
-        } = {}
-    ) {
-        const { connection = null } = options;
-        return await this.call<Record<string, any>[]>('/select', {query, bindings, connection});
-    }
-
-    async callFunction<T extends any>(func: string, args: any[]|Record<string, any> = []) {
-        return await this.call<T>('/function', {function: func, args});
-    }
-
-    /**
-     * Sets a laravel config value until tearDown is called (or the test ends)
-     */
-    async config(key: string, value: any) {
-        return await this.call('/dynamicConfig', {key, value});
-    }
-
-    /**
-     * Travel to a specific time
-     * ex: travel('2021-01-01 00:00:00')
-     */
-    async travel(to: string) {
-        return await this.call('/travel', {to});
-    }
-
-    async registerBootFunction(func: string) {
-        return await this.call('/registerBootFunction', {function: func});
-    }
-
-    async tearDown() {
-        return await this.call('/tearDown');
-    }
-
+  async tearDown() {
+    return await this.call('/tearDown');
+  }
 }
